@@ -1,0 +1,21 @@
+# environment
+.env
+.env.local
+
+# logs
+*.log
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# local data
+data/
+
+# debug screenshots
+*.png
+
+# macOS
+.DS_Store
