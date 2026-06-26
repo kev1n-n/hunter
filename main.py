@@ -509,8 +509,8 @@ def run_scan():  # 定義執行一次完整掃描的函式
     now = datetime.now(TAIWAN_TZ).strftime("%H:%M:%S")  # 取得目前台灣時間
 
     print(f"\n{'=' * 50}")  # 印出分隔線
-    print(f"[{now}] 開始掃描...")  # 印出開始掃描時間
-
+    print(f"[誠品][{now}] 開始掃描...")
+    
     print("Step 1 / 翻頁抓取所有商品與購物車狀態...")  # 印出 Step 1
     products = fetch_all_products()  # 抓全部商品與狀態
 
