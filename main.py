@@ -464,8 +464,28 @@ def fetch_all_products() -> list:  # 定義抓全部商品資料的函式
 
         page = context.new_page()  # 開啟新分頁
         page.goto(build_search_url(), wait_until="domcontentloaded", timeout=60000)  # 進入搜尋頁
-        page.wait_for_timeout(3000)  # 等商品列表渲染
 
+        try:
+            page.wait_for_function(
+                """
+                () => {
+                    const body = document.body?.innerText || '';
+                    const productLinks = document.querySelectorAll("a[href*='/product/']").length;
+
+                    return (
+                        body.includes('共有') ||
+                        body.includes('符合商品') ||
+                        productLinks > 0
+                    );
+                }
+                """,
+                timeout=15000,
+            )
+        except Exception:
+            print("  [!] 等待誠品商品列表逾時，改用目前頁面內容繼續抓")
+
+        page.wait_for_timeout(3000)  # 再多等一下，讓商品列表完整渲染
+        
         total = get_total_count(page)  # 取得總商品數
         print(f"  共 {total} 筆商品")  # 印出總商品數
 
@@ -589,6 +609,14 @@ def run_scan():  # 定義執行一次完整掃描的函式
 
     print(f"\n下次掃描：{CHECK_INTERVAL} 秒後")  # 印出下次掃描時間
 
+def safe_run_scan():
+    try:
+        run_scan()
+    except Exception as e:
+        now = datetime.now(TAIWAN_TZ).strftime("%H:%M:%S")
+        print(f"[誠品][{now}] 掃描錯誤，但程式不中斷：{e}", flush=True)
+        print(f"下次掃描：{CHECK_INTERVAL} 秒後", flush=True)
+
 
 def main():  # 定義主程式入口
     once = "--once" in sys.argv  # 判斷是否有 --once 參數
@@ -603,9 +631,9 @@ def main():  # 定義主程式入口
         run_scan()  # 只執行一次掃描
         return  # 掃完後結束程式
 
-    run_scan()  # 沒有 --once 時，啟動後先掃一次
+    safe_run_scan()
 
-    schedule.every(CHECK_INTERVAL).seconds.do(run_scan)  # 設定每隔 CHECK_INTERVAL 秒掃描一次
+    schedule.every(CHECK_INTERVAL).seconds.do(safe_run_scan)
 
     while True:  # 持續執行程式
         schedule.run_pending()  # 執行到時間的排程
