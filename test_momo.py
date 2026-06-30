@@ -22,7 +22,7 @@ HEADLESS = True
 CHECK_PRODUCT_DETAIL_SELLER = False
 
 # 但要進商品頁確認狀態，避免「即將開賣通知我」被誤判成有貨
-CHECK_PRODUCT_DETAIL_STATUS = True
+CHECK_PRODUCT_DETAIL_STATUS = False
 
 LABEL_MAP = {
     "in_stock": "✅ 有貨 / 可加入購物車",
