@@ -13,7 +13,7 @@ def is_enabled(name: str, default: str = "true") -> bool:
     return value in ["1", "true", "yes", "on"]
 
 
-# 每個爬蟲啟動間隔，避免三個 Chromium 同時開造成 Zeabur 記憶體壓力
+# 每個爬蟲啟動間隔，避免多個 Chromium 同時開造成 Zeabur 記憶體壓力
 STARTUP_STAGGER_SECONDS = int(os.getenv("STARTUP_STAGGER_SECONDS", "15"))
 
 # 子程序掛掉後，幾秒後重啟
@@ -30,6 +30,9 @@ if is_enabled("ENABLE_FUNBOX", "true"):
 
 if is_enabled("ENABLE_TCSB", "true"):
     SERVICES.append(("tcsb", [sys.executable, "-u", "test_tcsb.py"]))
+
+if is_enabled("ENABLE_MOMO", "false"):
+    SERVICES.append(("momo", [sys.executable, "-u", "test_momo.py"]))
 
 if is_enabled("ENABLE_TAKARA", "false"):
     SERVICES.append(("takara", [sys.executable, "-u", "test_takara.py"]))
@@ -115,6 +118,7 @@ def print_runner_config():
     print(f"[runner] ENABLE_ESLITE={os.getenv('ENABLE_ESLITE')}", flush=True)
     print(f"[runner] ENABLE_FUNBOX={os.getenv('ENABLE_FUNBOX')}", flush=True)
     print(f"[runner] ENABLE_TCSB={os.getenv('ENABLE_TCSB')}", flush=True)
+    print(f"[runner] ENABLE_MOMO={os.getenv('ENABLE_MOMO')}", flush=True)
     print(f"[runner] ENABLE_TAKARA={os.getenv('ENABLE_TAKARA')}", flush=True)
     print(f"[runner] STARTUP_STAGGER_SECONDS={STARTUP_STAGGER_SECONDS}", flush=True)
     print(f"[runner] RESTART_DELAY_SECONDS={RESTART_DELAY_SECONDS}", flush=True)
