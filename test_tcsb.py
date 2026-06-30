@@ -10,10 +10,7 @@ from config import CHECK_INTERVAL
 from notifier import send_restock_alert
 
 
-TCSB_URL = (
-    "https://www.tcsb.com.tw/v2/Search"
-    "?q=%22BEYBLADEX%E6%88%B0%E9%AC%A5%E9%99%80%E8%9E%BA%22&shopId=32014"
-)
+TCSB_URL = "https://www.tcsb.com.tw/search?query=%E6%88%B0%E9%AC%A5%E9%99%80%E8%9E%BA"
 
 HEADLESS = True
 
@@ -43,6 +40,7 @@ def is_tcsb_beyblade_product(product: dict) -> bool:
     text = f"{name} {raw_text}"
     text_lower = text.lower()
     compact_text = normalize_text(text)
+    name_compact = normalize_text(name)
 
     has_beyblade_word = (
         "beyblade" in text_lower
@@ -52,7 +50,7 @@ def is_tcsb_beyblade_product(product: dict) -> bool:
     )
 
     has_product_code = bool(
-        re.search(r"\b(?:BX|UX|CX|BXG)-\d+", text, re.IGNORECASE)
+        re.search(r"\b(?:BX|UX|CX|BXG|BXH)-\d+", text, re.IGNORECASE)
     )
 
     target_words = [
@@ -77,9 +75,27 @@ def is_tcsb_beyblade_product(product: dict) -> bool:
         "貼紙",
         "卡牌",
         "紙製",
+        "數感小學",
+        "書",
+        "圖書",
+        "童書",
+        "小說",
+        "戰鬥陀螺x(1)",
+        "戰鬥陀螺x(2)",
+        "戰鬥陀螺x 1",
+        "戰鬥陀螺x 2",
     ]
 
-    if any(normalize_text(keyword) in compact_text for keyword in exclude_keywords):
+    compact_exclude_keywords = [
+        normalize_text(keyword)
+        for keyword in exclude_keywords
+    ]
+
+    if any(keyword in name_compact for keyword in compact_exclude_keywords):
+        product["excluded_reason"] = "排除關鍵字"
+        return False
+
+    if any(keyword in compact_text for keyword in compact_exclude_keywords):
         product["excluded_reason"] = "排除關鍵字"
         return False
 
@@ -153,7 +169,8 @@ def fetch_tcsb_products() -> list:
                     return (
                         body.includes('戰鬥陀螺') ||
                         body.includes('BEYBLADE') ||
-                        body.includes('商品') ||
+                        body.includes('搜索結果') ||
+                        body.includes('搜尋結果') ||
                         links > 20
                     );
                 }
@@ -199,17 +216,28 @@ def fetch_tcsb_products() -> list:
                         lower.includes('/member') ||
                         lower.includes('/login') ||
                         lower.includes('/category') ||
+                        lower.includes('/categories') ||
                         lower.includes('facebook') ||
-                        lower.includes('instagram')
+                        lower.includes('instagram') ||
+                        lower.includes('line.me') ||
+                        lower.includes('mailto:')
                     ) {
                         return false;
                     }
+
+                    const path = new URL(url).pathname;
 
                     return (
                         lower.includes('/product') ||
                         lower.includes('/products') ||
                         lower.includes('/goods') ||
-                        lower.includes('/item')
+                        lower.includes('/item') ||
+                        lower.includes('/salepage') ||
+                        lower.includes('/salepage/index') ||
+
+                        // 墊腳石新版商品網址會是純數字，例如：
+                        // https://www.tcsb.com.tw/194413
+                        /^\\/\\d+$/.test(path)
                     );
                 }
 
@@ -247,6 +275,8 @@ def fetch_tcsb_products() -> list:
                             text.toLowerCase().includes('beyblade') ||
                             text.includes('加入購物車') ||
                             text.includes('立即購買') ||
+                            text.includes('貨到通知') ||
+                            text.includes('已售完') ||
                             text.includes('售完') ||
                             text.includes('補貨') ||
                             text.includes('暫無供貨')
@@ -278,7 +308,8 @@ def fetch_tcsb_products() -> list:
                     if (
                         anchorText.length >= 4 &&
                         !anchorText.includes('加入購物車') &&
-                        !anchorText.includes('立即購買')
+                        !anchorText.includes('立即購買') &&
+                        !anchorText.includes('貨到通知')
                     ) {
                         return anchorText;
                     }
@@ -297,7 +328,8 @@ def fetch_tcsb_products() -> list:
                             lower.includes('bx-') ||
                             lower.includes('ux-') ||
                             lower.includes('cx-') ||
-                            lower.includes('bxg-')
+                            lower.includes('bxg-') ||
+                            lower.includes('bxh-')
                         );
                     });
 
@@ -329,6 +361,7 @@ def fetch_tcsb_products() -> list:
                     const compact = text.replace(/\\s+/g, '');
 
                     if (
+                        compact.includes('已售完') ||
                         compact.includes('售完') ||
                         compact.includes('補貨') ||
                         compact.includes('缺貨') ||
@@ -368,6 +401,25 @@ def fetch_tcsb_products() -> list:
                     const status = getStatus(card);
                     const rawText = clean(card.innerText || '');
 
+                    // 排除純分類或選單連結。
+                    // 真正商品卡通常會有價格、戰鬥陀螺文字、圖片 alt 或售完/貨到通知。
+                    const looksLikeProductCard = (
+                        price ||
+                        rawText.includes('NT$') ||
+                        rawText.includes('$') ||
+                        rawText.includes('戰鬥陀螺') ||
+                        rawText.toLowerCase().includes('beyblade') ||
+                        rawText.includes('貨到通知') ||
+                        rawText.includes('已售完') ||
+                        rawText.includes('售完') ||
+                        rawText.includes('加入購物車') ||
+                        rawText.includes('立即購買')
+                    );
+
+                    if (!looksLikeProductCard) {
+                        continue;
+                    }
+
                     products.set(url, {
                         store: '墊腳石',
                         name,
@@ -387,6 +439,19 @@ def fetch_tcsb_products() -> list:
         if not products:
             page.screenshot(path="tcsb_debug.png", full_page=True)
             print("抓到 0 個商品，已產生 tcsb_debug.png")
+
+            sample_links = page.evaluate(
+                """
+                () => [...document.querySelectorAll('a[href]')]
+                    .map(a => a.href)
+                    .filter(Boolean)
+                    .slice(0, 30)
+                """
+            )
+
+            print("\n前 30 個連結：")
+            for link in sample_links:
+                print(f"- {link}")
 
         browser.close()
 
@@ -425,6 +490,14 @@ def run_once():
     print(f"無貨：{len(out_of_stock)} 個")
     print(f"未知：{len(unknown)} 個")
     print("=" * 50)
+
+    if excluded_products:
+        print("\n🚫 墊腳石已排除商品")
+
+        for product in excluded_products[:30]:
+            reason = product.get("excluded_reason", "非目標商品")
+            print(f"- {product.get('name', '')}｜{reason}")
+            print(f"  {product.get('url', '')}")
 
     if in_stock:
         print("\n✅ 墊腳石有貨商品，準備發送 Discord")
