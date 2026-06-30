@@ -175,7 +175,7 @@ def fetch_tcsb_products() -> list:
                     );
                 }
                 """,
-                timeout=20000,
+                timeout=45000,
             )
         except Exception:
             print("[!] 等待墊腳石商品列表逾時，改用目前頁面內容繼續抓")
