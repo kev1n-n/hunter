@@ -14,13 +14,17 @@ def is_enabled(name: str, default: str = "true") -> bool:
 
 
 # 每間店掃完後，等幾秒再掃下一間
-STORE_STAGGER_SECONDS = int(os.getenv("STORE_STAGGER_SECONDS", "20"))
+STORE_STAGGER_SECONDS = int(os.getenv("STORE_STAGGER_SECONDS", "15"))
 
 # 全部店掃完一輪後，等幾秒再開始下一輪
 CYCLE_SLEEP_SECONDS = int(os.getenv("CYCLE_SLEEP_SECONDS", "60"))
 
 # 單一爬蟲最多跑幾秒，超過就強制結束，避免卡死
-SERVICE_TIMEOUT_SECONDS = int(os.getenv("SERVICE_TIMEOUT_SECONDS", "180"))
+SERVICE_TIMEOUT_SECONDS = int(os.getenv("SERVICE_TIMEOUT_SECONDS", "300"))
+
+# 跑幾輪後主動結束，讓 Zeabur 重啟乾淨的 container
+# 避免長時間開關 Chromium 後出現 pthread_create / resource temporarily unavailable
+MAX_ROUNDS_BEFORE_EXIT = int(os.getenv("MAX_ROUNDS_BEFORE_EXIT", "300"))
 
 
 SERVICES = []
@@ -119,6 +123,7 @@ def print_runner_config():
     print(f"[runner] STORE_STAGGER_SECONDS={STORE_STAGGER_SECONDS}", flush=True)
     print(f"[runner] CYCLE_SLEEP_SECONDS={CYCLE_SLEEP_SECONDS}", flush=True)
     print(f"[runner] SERVICE_TIMEOUT_SECONDS={SERVICE_TIMEOUT_SECONDS}", flush=True)
+    print(f"[runner] MAX_ROUNDS_BEFORE_EXIT={MAX_ROUNDS_BEFORE_EXIT}", flush=True)
     print("=" * 50, flush=True)
 
 
@@ -197,6 +202,15 @@ def main():
 
         print("=" * 50, flush=True)
         print(f"[runner] 第 {round_count} 輪掃描完成", flush=True)
+
+        if round_count >= MAX_ROUNDS_BEFORE_EXIT:
+            print(
+                f"[runner] 已完成 {MAX_ROUNDS_BEFORE_EXIT} 輪，主動結束讓 Zeabur 重啟",
+                flush=True,
+            )
+            print("[runner] 這是正常保護機制，不是程式錯誤", flush=True)
+            sys.exit(0)
+
         print(f"[runner] 等待 {CYCLE_SLEEP_SECONDS} 秒後開始下一輪", flush=True)
         print("=" * 50, flush=True)
 
