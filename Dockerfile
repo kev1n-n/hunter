@@ -13,4 +13,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["python", "-u", "run_all.py"]
+CMD ["xvfb-run", "-a", "python", "-u", "run_all.py"]

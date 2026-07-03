@@ -1,6 +1,7 @@
 import time
 import re
 import sys
+import os
 import subprocess
 
 from datetime import datetime
@@ -44,12 +45,12 @@ LABEL_MAP = {
 
 def hide_chromium_window():
     """
-    macOS 專用：
-    TAKARA 不能用真正 headless，
-    所以讓 Chromium 開起來後立刻隱藏視窗。
-
-    如果 macOS 跳權限，允許 Terminal / iTerm 控制 System Events。
+    只在 macOS 本機使用 AppleScript 隱藏 Chromium 視窗。
+    Zeabur 是 Linux，不能跑 osascript，所以直接略過。
     """
+    if sys.platform != "darwin":
+        return
+
     try:
         apple_script = """
         tell application "System Events"
