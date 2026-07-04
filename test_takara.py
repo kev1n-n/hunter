@@ -5,7 +5,7 @@ import time
 import subprocess
 
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from playwright.sync_api import sync_playwright
 
@@ -25,7 +25,7 @@ FALLBACK_IN_STOCK_URLS = [
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
 # TAKARA 這站 headless=True 容易 timeout
-# Zeabur 請用 Dockerfile 的 xvfb-run 跑 headed Chromium
+# Zeabur 請用 Dockerfile 的 Xvfb 跑 headed Chromium
 HEADLESS = os.getenv("TAKARA_HEADLESS", "false").lower() in ["1", "true", "yes", "on"]
 
 BROWSER_WIDTH = int(os.getenv("TAKARA_BROWSER_WIDTH", "500"))
@@ -88,6 +88,15 @@ def normalize_text(text: str) -> str:
     )
 
 
+def normalize_product_url(url: str) -> str:
+    """
+    移除 #revico-comment 這種 anchor，避免同一個商品重複出現。
+    """
+    parsed = urlparse(url)
+    parsed = parsed._replace(fragment="")
+    return urlunparse(parsed)
+
+
 def clean_takara_name(name: str) -> str:
     remove_words = [
         "カートに入れる",
@@ -99,6 +108,10 @@ def clean_takara_name(name: str) -> str:
         "品切れ",
         "販売終了",
         "販売期間終了",
+        "入荷案内申込",
+        "入荷案内",
+        "入荷お知らせ",
+        "再入荷通知",
         "SOLD OUT",
         "SOLDOUT",
     ]
@@ -221,6 +234,13 @@ def get_takara_status(product: dict, page_url: str) -> str:
         "品切れ",
         "販売終了",
         "販売期間終了",
+
+        # 到貨通知 / 補貨通知，不是現貨
+        "入荷案内申込",
+        "入荷案内",
+        "入荷お知らせ",
+        "再入荷通知",
+
         "soldout",
         "sold out",
     ]
@@ -241,8 +261,8 @@ def get_takara_status(product: dict, page_url: str) -> str:
     if any(normalize_text(keyword) in compact_text for keyword in in_stock_keywords):
         return "in_stock"
 
-    # 這個網址本身已經是 TAKARA 的「在庫あり」篩選結果
-    # 如果商品沒有被判斷成缺貨 / 預購，就先視為有貨
+    # 這個網址本身已經是 TAKARA 的「在庫あり」篩選結果。
+    # 但只有在沒有出現缺貨 / 補貨通知 / 預購文字時，才視為有貨。
     if "stock_on_sales=0" in page_url:
         return "in_stock"
 
@@ -445,7 +465,7 @@ def extract_takara_products(page) -> list[dict]:
                     if (node) {
                         const text = clean(node.innerText || node.textContent || '');
 
-                        if (text.length > 0) {
+                        if (text.length > 0 && text.length < 700) {
                             return node;
                         }
                     }
@@ -464,10 +484,7 @@ def extract_takara_products(page) -> list[dict]:
                     continue;
                 }
 
-                if (
-                    !href.includes('/shop/g/') &&
-                    !href.includes('/shop/goods/search.aspx')
-                ) {
+                if (!href.includes('/shop/g/g')) {
                     continue;
                 }
 
@@ -503,6 +520,7 @@ def extract_takara_products(page) -> list[dict]:
             continue
 
         url = urljoin("https://takaratomymall.jp", url)
+        url = normalize_product_url(url)
         product["url"] = url
 
         if url in seen_urls:
