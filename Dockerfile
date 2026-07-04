@@ -13,4 +13,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x1024x24 -ac -nolisten tcp > /tmp/xvfb.log 2>&1 & sleep 2 && export DISPLAY=:99 && python -u run_all.py"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x1024x24 -ac -nolisten tcp > /tmp/xvfb.log 2>&1 & sleep 2 && export DISPLAY=:99 && python -u run_store.py"]
