@@ -12,14 +12,17 @@ from playwright.sync_api import sync_playwright
 from notifier import send_restock_alert
 
 
+TAKARA_IN_STOCK_URL = (
+    "https://takaratomymall.jp/shop/goods/search.aspx"
+    "?stock_on_sales=0&keyword=BEYBLADE+X&min_price=&max_price=&search=x&wovn=ja"
+)
+
 BASE_TAKARA_URLS = [
-    "https://takaratomymall.jp/shop/goods/search.aspx?search=x&keyword=BEYBLADE+X&wovn=ja",
-    "https://takaratomymall.jp/shop/goods/search.aspx?search=x&keyword=BEYBLADE+X",
+    TAKARA_IN_STOCK_URL,
 ]
 
 FALLBACK_IN_STOCK_URLS = [
-    "https://takaratomymall.jp/shop/goods/search.aspx?stock_on_sales=0&keyword=BEYBLADE+X&min_price=&max_price=&search=x&wovn=ja",
-    "https://takaratomymall.jp/shop/goods/search.aspx?stock_on_sales=0&keyword=BEYBLADE+X&min_price=&max_price=&search=x",
+    TAKARA_IN_STOCK_URL,
 ]
 
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
@@ -33,7 +36,7 @@ BROWSER_HEIGHT = int(os.getenv("TAKARA_BROWSER_HEIGHT", "400"))
 BROWSER_X = int(os.getenv("TAKARA_BROWSER_X", "-2000"))
 BROWSER_Y = int(os.getenv("TAKARA_BROWSER_Y", "100"))
 
-PAGE_TIMEOUT_MS = int(os.getenv("TAKARA_PAGE_TIMEOUT_MS", "90000"))
+PAGE_TIMEOUT_MS = int(os.getenv("TAKARA_PAGE_TIMEOUT_MS", "45000"))
 
 LABEL_MAP = {
     "in_stock": "✅ 有貨 / 可加入購物車",
@@ -271,171 +274,40 @@ def get_takara_status(product: dict, page_url: str) -> str:
 
 def open_takara_base_page(page) -> bool:
     """
-    Zeabur 上 TAKARA 一般搜尋頁偶爾會載入很慢，
-    所以優先直接打開已經套用「在庫あり」條件的網址。
+    TAKARA 直接打開已套用「在庫あり」的網址。
+    如果這個網址本輪開不起來，就直接放棄，不再嘗試其他網址。
     """
-    loaded = False
+    try:
+        print(f"嘗試網址：{TAKARA_IN_STOCK_URL}", flush=True)
 
-    urls = FALLBACK_IN_STOCK_URLS + BASE_TAKARA_URLS
+        page.goto(
+            TAKARA_IN_STOCK_URL,
+            wait_until="domcontentloaded",
+            timeout=PAGE_TIMEOUT_MS,
+        )
 
-    for url in urls:
-        try:
-            print(f"嘗試網址：{url}", flush=True)
+        hide_chromium_window()
 
-            page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=PAGE_TIMEOUT_MS,
-            )
+        page.wait_for_timeout(10000)
 
-            hide_chromium_window()
+        return True
 
-            page.wait_for_timeout(10000)
-
-            loaded = True
-            break
-
-        except Exception as e:
-            print(f"  [!] TAKARA 開啟失敗：{e}", flush=True)
-            page.wait_for_timeout(3000)
-
-    return loaded
+    except Exception as e:
+        print(f"[!] TAKARA 在庫あり頁開啟失敗：{e}", flush=True)
+        return False
 
 
 def apply_in_stock_filter(page) -> bool:
     """
-    如果已經是 stock_on_sales=0 的網址，就不用再點畫面篩選。
-    否則才走原本畫面點選流程。
+    目前已經直接打開 stock_on_sales=0 的網址，
+    所以不用再點畫面上的篩選條件。
     """
     if "stock_on_sales=0" in page.url:
         print("已使用 TAKARA 在庫あり篩選網址，略過畫面點選篩選", flush=True)
         return True
 
-    print("準備設定 TAKARA 篩選條件...", flush=True)
-
-    try:
-        page.get_by_text("詳細検索").first.scroll_into_view_if_needed(timeout=5000)
-        page.wait_for_timeout(1000)
-    except Exception:
-        pass
-
-    print("確認「販売中商品」框框...", flush=True)
-
-    try:
-        page.evaluate(
-            """
-            () => {
-                function clean(text) {
-                    return (text || '').replace(/\\s+/g, '').trim();
-                }
-
-                const labels = Array.from(document.querySelectorAll('label'));
-
-                for (const label of labels) {
-                    const text = clean(label.innerText);
-
-                    if (text.includes('販売中商品')) {
-                        const input = label.querySelector('input');
-
-                        if (input && !input.checked) {
-                            input.click();
-                        }
-                    }
-                }
-            }
-            """
-        )
-
-        print("已確認「販売中商品」框框有勾選", flush=True)
-
-    except Exception as e:
-        print(f"[!] 確認販売中商品失敗：{e}", flush=True)
-
-    print("準備點選「販売中商品」區塊裡的「在庫あり」...", flush=True)
-
-    clicked_stock = False
-
-    try:
-        clicked_stock = page.evaluate(
-            """
-            () => {
-                function clean(text) {
-                    return (text || '').replace(/\\s+/g, '').trim();
-                }
-
-                const labels = Array.from(document.querySelectorAll('label'));
-
-                for (const label of labels) {
-                    const text = clean(label.innerText);
-
-                    if (text.includes('在庫あり')) {
-                        const input = label.querySelector('input');
-
-                        if (input) {
-                            input.click();
-                            return true;
-                        }
-
-                        label.click();
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-            """
-        )
-
-    except Exception as e:
-        print(f"[!] 點選在庫あり失敗：{e}", flush=True)
-
-    if clicked_stock:
-        print("已點選「販売中商品」區塊裡的「在庫あり」", flush=True)
-    else:
-        print("[!] 找不到「在庫あり」，改用目前頁面繼續掃描", flush=True)
-
-    print("準備點選「絞り込む」...", flush=True)
-
-    clicked_filter = False
-
-    try:
-        clicked_filter = page.evaluate(
-            """
-            () => {
-                function clean(text) {
-                    return (text || '').replace(/\\s+/g, '').trim();
-                }
-
-                const candidates = Array.from(
-                    document.querySelectorAll('button, input[type="submit"], a')
-                );
-
-                for (const el of candidates) {
-                    const text = clean(el.innerText || el.value || el.textContent);
-
-                    if (text.includes('絞り込む') || text.includes('検索')) {
-                        el.click();
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-            """
-        )
-
-        if clicked_filter:
-            print("已點選「絞り込む」", flush=True)
-            page.wait_for_timeout(10000)
-        else:
-            print("[!] 找不到「絞り込む」，改用目前頁面繼續掃描", flush=True)
-
-    except Exception as e:
-        print(f"[!] 點選絞り込む失敗：{e}", flush=True)
-
-    print(f"篩選後網址：{page.url}", flush=True)
-
-    return True
+    print("[!] 目前頁面不是 TAKARA 在庫あり篩選頁，略過本輪", flush=True)
+    return False
 
 
 def extract_takara_products(page) -> list[dict]:
@@ -535,6 +407,19 @@ def extract_takara_products(page) -> list[dict]:
     return unique_products
 
 
+def empty_result():
+    return {
+        "all": [],
+        "normal": [],
+        "excluded": [],
+        "non_target": [],
+        "in_stock": [],
+        "preorder": [],
+        "out_of_stock": [],
+        "unknown": [],
+    }
+
+
 def print_products(title: str, products: list[dict]):
     if not products:
         return
@@ -562,6 +447,9 @@ def scan_takara_once():
 
     print("=" * 50, flush=True)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 開始掃描 TAKARA...", flush=True)
+
+    browser = None
+    context = None
 
     try:
         with sync_playwright() as p:
@@ -601,21 +489,14 @@ def scan_takara_once():
             loaded = open_takara_base_page(page)
 
             if not loaded:
-                print("TAKARA TOMY MALL 一般搜尋頁無法連線，跳過這次掃描", flush=True)
-                context.close()
-                browser.close()
-                return {
-                    "all": [],
-                    "normal": [],
-                    "excluded": [],
-                    "non_target": [],
-                    "in_stock": [],
-                    "preorder": [],
-                    "out_of_stock": [],
-                    "unknown": [],
-                }
+                print("TAKARA 在庫あり頁無法連線，跳過這次掃描", flush=True)
+                return empty_result()
 
-            apply_in_stock_filter(page)
+            filtered = apply_in_stock_filter(page)
+
+            if not filtered:
+                print("TAKARA 篩選頁確認失敗，跳過這次掃描", flush=True)
+                return empty_result()
 
             hide_chromium_window()
 
@@ -645,11 +526,21 @@ def scan_takara_once():
                 else:
                     unknown_products.append(product)
 
-            context.close()
-            browser.close()
-
     except Exception as e:
         print(f"[!] TAKARA 掃描錯誤：{e}", flush=True)
+
+    finally:
+        try:
+            if context is not None:
+                context.close()
+        except Exception:
+            pass
+
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
 
     return {
         "all": all_products,
@@ -715,7 +606,7 @@ def run_once():
 
 def main():
     print("🇯🇵 TAKARA TOMY MALL 陀螺獵人啟動", flush=True)
-    print(f"   掃描網址：{BASE_TAKARA_URLS[0]}", flush=True)
+    print(f"   掃描網址：{TAKARA_IN_STOCK_URL}", flush=True)
     print(f"   掃描間隔：{CHECK_INTERVAL} 秒", flush=True)
     print(f"   背景模式：{HEADLESS}", flush=True)
     print(f"   視窗大小：{BROWSER_WIDTH} x {BROWSER_HEIGHT}", flush=True)
