@@ -1,10 +1,11 @@
-import time
+import os
 import re
 import sys
-import os
+import time
 import subprocess
 
 from datetime import datetime
+from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
@@ -21,19 +22,18 @@ FALLBACK_IN_STOCK_URLS = [
     "https://takaratomymall.jp/shop/goods/search.aspx?stock_on_sales=0&keyword=BEYBLADE+X&min_price=&max_price=&search=x",
 ]
 
-CHECK_INTERVAL = 60
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
 # TAKARA 這站 headless=True 容易 timeout
-# 所以保持 False，但啟動後會嘗試把 Chromium 隱藏起來
-HEADLESS = False
+# Zeabur 請用 Dockerfile 的 xvfb-run 跑 headed Chromium
+HEADLESS = os.getenv("TAKARA_HEADLESS", "false").lower() in ["1", "true", "yes", "on"]
 
-# 視窗大小
-BROWSER_WIDTH = 500
-BROWSER_HEIGHT = 400
+BROWSER_WIDTH = int(os.getenv("TAKARA_BROWSER_WIDTH", "500"))
+BROWSER_HEIGHT = int(os.getenv("TAKARA_BROWSER_HEIGHT", "400"))
+BROWSER_X = int(os.getenv("TAKARA_BROWSER_X", "-2000"))
+BROWSER_Y = int(os.getenv("TAKARA_BROWSER_Y", "100"))
 
-# 把視窗丟到螢幕外面，不干擾你操作電腦
-BROWSER_X = -2000
-BROWSER_Y = 100
+PAGE_TIMEOUT_MS = int(os.getenv("TAKARA_PAGE_TIMEOUT_MS", "90000"))
 
 LABEL_MAP = {
     "in_stock": "✅ 有貨 / 可加入購物車",
@@ -70,21 +70,47 @@ def hide_chromium_window():
             timeout=3,
         )
 
-        print("已嘗試隱藏 Chromium 視窗")
+        print("已嘗試隱藏 Chromium 視窗", flush=True)
 
     except Exception as e:
-        print(f"[!] 隱藏 Chromium 視窗失敗：{e}")
+        print(f"[!] 隱藏 Chromium 視窗失敗：{e}", flush=True)
 
 
 def normalize_text(text: str) -> str:
     return (
-        text.lower()
+        (text or "")
+        .lower()
         .replace(" ", "")
         .replace("　", "")
         .replace("\n", "")
         .replace("\t", "")
         .strip()
     )
+
+
+def clean_takara_name(name: str) -> str:
+    remove_words = [
+        "カートに入れる",
+        "買い物かごに入れる",
+        "予約する",
+        "購入する",
+        "在庫あり",
+        "在庫なし",
+        "品切れ",
+        "販売終了",
+        "販売期間終了",
+        "SOLD OUT",
+        "SOLDOUT",
+    ]
+
+    for word in remove_words:
+        name = name.replace(word, "").strip()
+
+    name = re.sub(r"￥\s*[\d,]+", "", name).strip()
+    name = re.sub(r"¥\s*[\d,]+", "", name).strip()
+    name = re.sub(r"\s+", " ", name).strip()
+
+    return name
 
 
 def is_normal_takara_beyblade_product(product: dict) -> bool:
@@ -102,7 +128,7 @@ def is_normal_takara_beyblade_product(product: dict) -> bool:
     )
 
     has_product_code = bool(
-        re.search(r"\b(?:BX|UX|CX|BXG)-\d+", text, re.IGNORECASE)
+        re.search(r"\b(?:BX|UX|CX|BXG|BXH|CXG|UXG)-\d+", text, re.IGNORECASE)
     )
 
     return has_beyblade and has_product_code
@@ -140,6 +166,7 @@ def is_excluded_takara_product(product: dict) -> bool:
         # 貼紙
         "ベイエンブレムステッカー",
         "エンブレムステッカー",
+        "ベイブレードステッカー",
         "ステッカー",
         "シール",
 
@@ -158,6 +185,10 @@ def is_excluded_takara_product(product: dict) -> bool:
         "バトルパスシート",
         "ロックチップ",
 
+        # 拼圖 / 玩具周邊
+        "ジグソーパズル",
+        "パズル",
+
         # 明顯不是實體商品
         "ダウンロード",
         "壁紙",
@@ -171,51 +202,81 @@ def is_excluded_takara_product(product: dict) -> bool:
     return any(keyword in compact_text for keyword in compact_exclude_keywords)
 
 
-def clean_takara_name(name: str) -> str:
-    remove_words = [
-        "カートに入れる",
-        "買い物かごに入れる",
+def get_takara_status(product: dict, page_url: str) -> str:
+    name = product.get("name", "")
+    raw_text = product.get("raw_text", "")
+
+    text = f"{name} {raw_text}"
+    compact_text = normalize_text(text)
+
+    preorder_keywords = [
         "予約する",
-        "購入する",
-        "在庫あり",
+        "予約受付中",
+        "予約商品",
+        "予約",
+    ]
+
+    out_of_stock_keywords = [
         "在庫なし",
         "品切れ",
         "販売終了",
-        "SOLD OUT",
-        "SOLDOUT",
+        "販売期間終了",
+        "soldout",
+        "sold out",
     ]
 
-    for word in remove_words:
-        name = name.replace(word, "").strip()
+    in_stock_keywords = [
+        "カートに入れる",
+        "買い物かごに入れる",
+        "購入する",
+        "在庫あり",
+    ]
 
-    name = re.sub(r"￥\s*[\d,]+", "", name).strip()
-    name = re.sub(r"¥\s*[\d,]+", "", name).strip()
-    name = re.sub(r"\s+", " ", name).strip()
+    if any(normalize_text(keyword) in compact_text for keyword in preorder_keywords):
+        return "preorder"
 
-    return name
+    if any(normalize_text(keyword) in compact_text for keyword in out_of_stock_keywords):
+        return "out_of_stock"
+
+    if any(normalize_text(keyword) in compact_text for keyword in in_stock_keywords):
+        return "in_stock"
+
+    # 這個網址本身已經是 TAKARA 的「在庫あり」篩選結果
+    # 如果商品沒有被判斷成缺貨 / 預購，就先視為有貨
+    if "stock_on_sales=0" in page_url:
+        return "in_stock"
+
+    return "unknown"
 
 
 def open_takara_base_page(page) -> bool:
+    """
+    Zeabur 上 TAKARA 一般搜尋頁偶爾會載入很慢，
+    所以優先直接打開已經套用「在庫あり」條件的網址。
+    """
     loaded = False
 
-    for url in BASE_TAKARA_URLS:
+    urls = FALLBACK_IN_STOCK_URLS + BASE_TAKARA_URLS
+
+    for url in urls:
         try:
-            print(f"嘗試網址：{url}")
+            print(f"嘗試網址：{url}", flush=True)
 
-            # TAKARA 不要等完整 load，會很容易卡住
-            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=PAGE_TIMEOUT_MS,
+            )
 
-            # 再隱藏一次，避免頁面開啟後視窗又跳回來
             hide_chromium_window()
 
-            # 給頁面時間慢慢渲染
             page.wait_for_timeout(10000)
 
             loaded = True
             break
 
         except Exception as e:
-            print(f"  [!] TAKARA 開啟失敗：{e}")
+            print(f"  [!] TAKARA 開啟失敗：{e}", flush=True)
             page.wait_for_timeout(3000)
 
     return loaded
@@ -223,13 +284,14 @@ def open_takara_base_page(page) -> bool:
 
 def apply_in_stock_filter(page) -> bool:
     """
-    流程：
-    1. 找「販売中商品」那個框框
-    2. 確認它有勾選
-    3. 點「販売中商品」區塊裡的「在庫あり」
-    4. 點「絞り込む」
+    如果已經是 stock_on_sales=0 的網址，就不用再點畫面篩選。
+    否則才走原本畫面點選流程。
     """
-    print("準備設定 TAKARA 篩選條件...")
+    if "stock_on_sales=0" in page.url:
+        print("已使用 TAKARA 在庫あり篩選網址，略過畫面點選篩選", flush=True)
+        return True
+
+    print("準備設定 TAKARA 篩選條件...", flush=True)
 
     try:
         page.get_by_text("詳細検索").first.scroll_into_view_if_needed(timeout=5000)
@@ -237,81 +299,66 @@ def apply_in_stock_filter(page) -> bool:
     except Exception:
         pass
 
-    print("確認「販売中商品」框框...")
-
-    sales_checked = False
+    print("確認「販売中商品」框框...", flush=True)
 
     try:
-        sales_checked = page.evaluate(
+        page.evaluate(
             """
             () => {
                 function clean(text) {
                     return (text || '').replace(/\\s+/g, '').trim();
                 }
 
-                function getInputFromLabel(label) {
-                    const inputInside = label.querySelector('input');
+                const labels = Array.from(document.querySelectorAll('label'));
 
-                    if (inputInside) {
-                        return inputInside;
+                for (const label of labels) {
+                    const text = clean(label.innerText);
+
+                    if (text.includes('販売中商品')) {
+                        const input = label.querySelector('input');
+
+                        if (input && !input.checked) {
+                            input.click();
+                        }
                     }
+                }
+            }
+            """
+        )
 
-                    const forId = label.getAttribute('for');
+        print("已確認「販売中商品」框框有勾選", flush=True)
 
-                    if (forId) {
-                        return document.getElementById(forId);
-                    }
+    except Exception as e:
+        print(f"[!] 確認販売中商品失敗：{e}", flush=True)
 
-                    return null;
+    print("準備點選「販売中商品」區塊裡的「在庫あり」...", flush=True)
+
+    clicked_stock = False
+
+    try:
+        clicked_stock = page.evaluate(
+            """
+            () => {
+                function clean(text) {
+                    return (text || '').replace(/\\s+/g, '').trim();
                 }
 
-                const labels = [...document.querySelectorAll('label')];
+                const labels = Array.from(document.querySelectorAll('label'));
 
-                const salesLabel = labels.find(label => {
-                    const text = clean(label.innerText || label.textContent || '');
-                    return text.includes('販売中商品');
-                });
+                for (const label of labels) {
+                    const text = clean(label.innerText);
 
-                if (salesLabel) {
-                    const input = getInputFromLabel(salesLabel);
+                    if (text.includes('在庫あり')) {
+                        const input = label.querySelector('input');
 
-                    if (input && input.type === 'checkbox') {
-                        if (!input.checked) {
-                            salesLabel.click();
+                        if (input) {
+                            input.click();
+                            return true;
                         }
 
+                        label.click();
                         return true;
                     }
-
-                    salesLabel.click();
-                    return true;
-                }
-
-                const nodes = [...document.querySelectorAll('div, span, p, td, th')];
-
-                const salesNode = nodes.find(node => {
-                    const text = clean(node.innerText || node.textContent || '');
-                    return text.includes('販売中商品');
-                });
-
-                if (!salesNode) {
-                    return false;
-                }
-
-                let container = salesNode;
-
-                for (let i = 0; i < 5 && container; i++) {
-                    const checkbox = container.querySelector("input[type='checkbox']");
-
-                    if (checkbox) {
-                        if (!checkbox.checked) {
-                            checkbox.click();
-                        }
-
-                        return true;
-                    }
-
-                    container = container.parentElement;
                 }
 
                 return false;
@@ -319,112 +366,15 @@ def apply_in_stock_filter(page) -> bool:
             """
         )
 
-        if sales_checked:
-            print("已確認「販売中商品」框框有勾選")
-        else:
-            print("  [!] 找不到「販売中商品」框框")
-
     except Exception as e:
-        print(f"  [!] 確認販売中商品失敗：{e}")
+        print(f"[!] 點選在庫あり失敗：{e}", flush=True)
 
-    if not sales_checked:
-        return False
+    if clicked_stock:
+        print("已點選「販売中商品」區塊裡的「在庫あり」", flush=True)
+    else:
+        print("[!] 找不到「在庫あり」，改用目前頁面繼續掃描", flush=True)
 
-    page.wait_for_timeout(1000)
-
-    print("準備點選「販売中商品」區塊裡的「在庫あり」...")
-
-    clicked_in_stock = False
-
-    try:
-        clicked_in_stock = page.evaluate(
-            """
-            () => {
-                function clean(text) {
-                    return (text || '').replace(/\\s+/g, '').trim();
-                }
-
-                function getInputFromLabel(label) {
-                    const inputInside = label.querySelector('input');
-
-                    if (inputInside) {
-                        return inputInside;
-                    }
-
-                    const forId = label.getAttribute('for');
-
-                    if (forId) {
-                        return document.getElementById(forId);
-                    }
-
-                    return null;
-                }
-
-                const labels = [...document.querySelectorAll('label')];
-
-                const salesIndex = labels.findIndex(label => {
-                    const text = clean(label.innerText || label.textContent || '');
-                    return text.includes('販売中商品');
-                });
-
-                if (salesIndex === -1) {
-                    return false;
-                }
-
-                let reserveIndex = labels.findIndex((label, index) => {
-                    if (index <= salesIndex) {
-                        return false;
-                    }
-
-                    const text = clean(label.innerText || label.textContent || '');
-                    return text.includes('予約商品');
-                });
-
-                if (reserveIndex === -1) {
-                    reserveIndex = labels.length;
-                }
-
-                const salesAreaLabels = labels.slice(salesIndex, reserveIndex);
-
-                const inStockLabel = salesAreaLabels.find(label => {
-                    const text = clean(label.innerText || label.textContent || '');
-                    return text === '在庫あり' || text.includes('在庫あり');
-                });
-
-                if (!inStockLabel) {
-                    return false;
-                }
-
-                const input = getInputFromLabel(inStockLabel);
-
-                if (input && (input.type === 'radio' || input.type === 'checkbox')) {
-                    if (!input.checked) {
-                        inStockLabel.click();
-                    }
-
-                    return true;
-                }
-
-                inStockLabel.click();
-                return true;
-            }
-            """
-        )
-
-        if clicked_in_stock:
-            print("已點選「販売中商品」區塊裡的「在庫あり」")
-        else:
-            print("  [!] 找不到販売中商品區塊裡的在庫あり")
-
-    except Exception as e:
-        print(f"  [!] 點選在庫あり失敗：{e}")
-
-    if not clicked_in_stock:
-        return False
-
-    page.wait_for_timeout(1000)
-
-    print("準備點選「絞り込む」...")
+    print("準備點選「絞り込む」...", flush=True)
 
     clicked_filter = False
 
@@ -436,494 +386,332 @@ def apply_in_stock_filter(page) -> bool:
                     return (text || '').replace(/\\s+/g, '').trim();
                 }
 
-                const candidates = [
-                    ...document.querySelectorAll("button"),
-                    ...document.querySelectorAll("input[type='submit']"),
-                    ...document.querySelectorAll("input[type='button']"),
-                    ...document.querySelectorAll("a"),
-                    ...document.querySelectorAll("[role='button']")
-                ];
+                const candidates = Array.from(
+                    document.querySelectorAll('button, input[type="submit"], a')
+                );
 
-                const target = candidates.find(el => {
-                    const text = clean(el.innerText || el.textContent || el.value || '');
-                    return text.includes('絞り込む');
-                });
+                for (const el of candidates) {
+                    const text = clean(el.innerText || el.value || el.textContent);
 
-                if (!target) {
-                    return false;
+                    if (text.includes('絞り込む') || text.includes('検索')) {
+                        el.click();
+                        return true;
+                    }
                 }
 
-                target.click();
-                return true;
+                return false;
             }
             """
         )
 
         if clicked_filter:
-            print("已點選「絞り込む」")
+            print("已點選「絞り込む」", flush=True)
+            page.wait_for_timeout(10000)
         else:
-            print("  [!] 找不到絞り込む按鈕")
+            print("[!] 找不到「絞り込む」，改用目前頁面繼續掃描", flush=True)
 
     except Exception as e:
-        print(f"  [!] 點選絞り込む失敗：{e}")
+        print(f"[!] 點選絞り込む失敗：{e}", flush=True)
 
-    if not clicked_filter:
-        return False
-
-    hide_chromium_window()
-
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=60000)
-    except Exception:
-        pass
-
-    try:
-        page.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
-
-    page.wait_for_timeout(6000)
-
-    print(f"篩選後網址：{page.url}")
+    print(f"篩選後網址：{page.url}", flush=True)
 
     return True
 
 
-def open_fallback_in_stock_page(page) -> bool:
-    print("自動點擊篩選失敗，改用備用在庫あり網址...")
+def extract_takara_products(page) -> list[dict]:
+    products = page.evaluate(
+        """
+        () => {
+            function clean(text) {
+                return (text || '').replace(/\\s+/g, ' ').trim();
+            }
 
-    for url in FALLBACK_IN_STOCK_URLS:
-        try:
-            print(f"嘗試備用網址：{url}")
+            function pickContainer(anchor) {
+                const selectors = [
+                    'li',
+                    '.item',
+                    '.product',
+                    '.goods',
+                    '.goodsList',
+                    '.block-goods-list--item',
+                    '.block-thumbnail-t',
+                    'article',
+                    'div'
+                ];
 
-            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+                for (const selector of selectors) {
+                    const node = anchor.closest(selector);
+
+                    if (node) {
+                        const text = clean(node.innerText || node.textContent || '');
+
+                        if (text.length > 0) {
+                            return node;
+                        }
+                    }
+                }
+
+                return anchor;
+            }
+
+            const anchors = Array.from(document.querySelectorAll('a[href]'));
+            const results = [];
+
+            for (const a of anchors) {
+                const href = a.href || '';
+
+                if (!href) {
+                    continue;
+                }
+
+                if (
+                    !href.includes('/shop/g/') &&
+                    !href.includes('/shop/goods/search.aspx')
+                ) {
+                    continue;
+                }
+
+                const container = pickContainer(a);
+                const rawText = clean(container.innerText || container.textContent || '');
+                const anchorText = clean(a.innerText || a.textContent || '');
+
+                let name = anchorText || rawText || '未知商品';
+
+                if (rawText.length > name.length && rawText.length < 500) {
+                    name = rawText;
+                }
+
+                results.push({
+                    name,
+                    url: href,
+                    raw_text: rawText || anchorText || name
+                });
+            }
+
+            return results;
+        }
+        """
+    )
+
+    seen_urls = set()
+    unique_products = []
+
+    for product in products:
+        url = product.get("url", "").strip()
+
+        if not url:
+            continue
+
+        url = urljoin("https://takaratomymall.jp", url)
+        product["url"] = url
+
+        if url in seen_urls:
+            continue
+
+        seen_urls.add(url)
+
+        product["name"] = clean_takara_name(product.get("name", "未知商品"))
+
+        unique_products.append(product)
+
+    return unique_products
+
+
+def print_products(title: str, products: list[dict]):
+    if not products:
+        return
+
+    print(f"\n{title}", flush=True)
+
+    for product in products:
+        name = product.get("name", "未知商品")
+        url = product.get("url", "")
+
+        print(f"- {name}", flush=True)
+        print(f"  {url}", flush=True)
+
+
+def scan_takara_once():
+    all_products = []
+    normal_products = []
+    excluded_products = []
+    non_target_products = []
+
+    in_stock_products = []
+    preorder_products = []
+    out_of_stock_products = []
+    unknown_products = []
+
+    print("=" * 50, flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 開始掃描 TAKARA...", flush=True)
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=HEADLESS,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-http2",
+                    "--disable-blink-features=AutomationControlled",
+                    f"--window-size={BROWSER_WIDTH},{BROWSER_HEIGHT}",
+                    f"--window-position={BROWSER_X},{BROWSER_Y}",
+                ],
+            )
 
             hide_chromium_window()
 
-            page.wait_for_timeout(10000)
+            context = browser.new_context(
+                viewport={
+                    "width": BROWSER_WIDTH,
+                    "height": BROWSER_HEIGHT,
+                },
+                locale="ja-JP",
+                timezone_id="Asia/Tokyo",
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            )
 
-            return True
+            page = context.new_page()
+            page.set_default_timeout(30000)
 
-        except Exception as e:
-            print(f"  [!] 備用在庫あり網址失敗：{e}")
-            page.wait_for_timeout(3000)
+            print("正在打開 TAKARA TOMY MALL...", flush=True)
 
-    return False
+            loaded = open_takara_base_page(page)
 
-
-def fetch_takara_products() -> list:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            args=[
-                "--disable-http2",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-
-                # 視窗仍然存在，但會開在螢幕外面
-                f"--window-size={BROWSER_WIDTH},{BROWSER_HEIGHT}",
-                f"--window-position={BROWSER_X},{BROWSER_Y}",
-            ],
-        )
-
-        hide_chromium_window()
-
-        context = browser.new_context(
-            locale="ja-JP",
-            viewport={"width": BROWSER_WIDTH, "height": BROWSER_HEIGHT},
-            ignore_https_errors=True,
-            extra_http_headers={
-                "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Upgrade-Insecure-Requests": "1",
-            },
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-        )
-
-        page = context.new_page()
-
-        hide_chromium_window()
-
-        print("正在打開 TAKARA TOMY MALL...")
-
-        loaded = open_takara_base_page(page)
-
-        if not loaded:
-            print("TAKARA TOMY MALL 一般搜尋頁無法連線，跳過這次掃描")
-            browser.close()
-            return []
-
-        try:
-            body_text = page.inner_text("body")
-        except Exception:
-            body_text = ""
-
-        if (
-            "Queue-it" in body_text
-            or "waiting room" in body_text.lower()
-            or "アクセスが集中" in body_text
-            or "しばらくお待ちください" in body_text
-        ):
-            page.screenshot(path="takara_queue_or_blocked.png", full_page=True)
-            print("疑似被 TAKARA TOMY MALL 排隊頁或防護頁擋住，已產生 takara_queue_or_blocked.png")
-            browser.close()
-            return []
-
-        filter_ok = apply_in_stock_filter(page)
-
-        if not filter_ok:
-            fallback_ok = open_fallback_in_stock_page(page)
-
-            if not fallback_ok:
-                print("TAKARA TOMY MALL 無法切到在庫あり結果，跳過這次掃描")
+            if not loaded:
+                print("TAKARA TOMY MALL 一般搜尋頁無法連線，跳過這次掃描", flush=True)
+                context.close()
                 browser.close()
-                return []
-
-        hide_chromium_window()
-
-        for _ in range(6):
-            page.mouse.wheel(0, 1600)
-            page.wait_for_timeout(1000)
-
-        products = page.evaluate(
-            """
-            () => {
-                const products = new Map();
-
-                function clean(text) {
-                    return (text || '').replace(/\\s+/g, ' ').trim();
+                return {
+                    "all": [],
+                    "normal": [],
+                    "excluded": [],
+                    "non_target": [],
+                    "in_stock": [],
+                    "preorder": [],
+                    "out_of_stock": [],
+                    "unknown": [],
                 }
 
-                function normalizeUrl(href) {
-                    const url = new URL(href);
-                    url.search = '';
-                    return url.toString();
-                }
+            apply_in_stock_filter(page)
 
-                function isProductUrl(url) {
-                    return (
-                        url.includes('takaratomymall.jp') &&
-                        (
-                            url.includes('/shop/g/g') ||
-                            url.includes('/shop/goods/') ||
-                            url.includes('goods.aspx') ||
-                            url.includes('goods_detail')
-                        )
-                    );
-                }
+            hide_chromium_window()
 
-                function countProductLinks(node) {
-                    if (!node || !node.querySelectorAll) {
-                        return 0;
-                    }
+            all_products = extract_takara_products(page)
 
-                    const urls = [...node.querySelectorAll('a[href]')]
-                        .map(a => a.href)
-                        .filter(href => isProductUrl(href))
-                        .map(href => normalizeUrl(href));
+            for product in all_products:
+                if is_excluded_takara_product(product):
+                    excluded_products.append(product)
+                    continue
 
-                    return new Set(urls).size;
-                }
+                if not is_normal_takara_beyblade_product(product):
+                    non_target_products.append(product)
+                    continue
 
-                function findCard(anchor) {
-                    let node = anchor;
-                    let best = anchor.parentElement || anchor;
+                status = get_takara_status(product, page.url)
+                product["status"] = status
+                product["store"] = "TAKARA TOMY MALL"
 
-                    for (let i = 0; i < 16 && node; i++) {
-                        const text = clean(node.innerText || '');
-                        const productCount = countProductLinks(node);
+                normal_products.append(product)
 
-                        const looksLikeCard = (
-                            text.includes('￥') ||
-                            text.includes('¥') ||
-                            text.includes('カートに入れる') ||
-                            text.includes('買い物かごに入れる') ||
-                            text.includes('予約') ||
-                            text.includes('在庫あり') ||
-                            text.includes('在庫なし') ||
-                            text.includes('品切れ') ||
-                            text.includes('販売終了') ||
-                            text.includes('SOLD OUT') ||
-                            text.includes('SOLDOUT') ||
-                            text.includes('BEYBLADE X') ||
-                            text.includes('ベイブレード')
-                        );
+                if status == "in_stock":
+                    in_stock_products.append(product)
+                elif status == "preorder":
+                    preorder_products.append(product)
+                elif status == "out_of_stock":
+                    out_of_stock_products.append(product)
+                else:
+                    unknown_products.append(product)
 
-                        if (looksLikeCard && productCount <= 1) {
-                            best = node;
-                        }
+            context.close()
+            browser.close()
 
-                        if (productCount > 1) {
-                            break;
-                        }
+    except Exception as e:
+        print(f"[!] TAKARA 掃描錯誤：{e}", flush=True)
 
-                        node = node.parentElement;
-                    }
+    return {
+        "all": all_products,
+        "normal": normal_products,
+        "excluded": excluded_products,
+        "non_target": non_target_products,
+        "in_stock": in_stock_products,
+        "preorder": preorder_products,
+        "out_of_stock": out_of_stock_products,
+        "unknown": unknown_products,
+    }
 
-                    return best;
-                }
 
-                function getName(card, anchor) {
-                    const anchorText = clean(anchor.innerText || anchor.textContent || '');
+def send_takara_notifications(products: list[dict]):
+    if not products:
+        print("\n目前 TAKARA 無現貨，不發 Discord", flush=True)
+        return
 
-                    if (
-                        anchorText.length >= 4 &&
-                        !anchorText.includes('カートに入れる') &&
-                        !anchorText.includes('買い物かごに入れる') &&
-                        !anchorText.includes('在庫なし') &&
-                        !anchorText.includes('品切れ')
-                    ) {
-                        return anchorText;
-                    }
+    print("\n🎯 TAKARA 發現現貨，準備發 Discord", flush=True)
 
-                    const lines = (card.innerText || '')
-                        .split('\\n')
-                        .map(line => clean(line))
-                        .filter(Boolean);
+    for product in products:
+        try:
+            send_restock_alert(product)
+            print(f"已發送 Discord：{product.get('name', '未知商品')}", flush=True)
+        except Exception as e:
+            print(f"[!] Discord 發送失敗：{e}", flush=True)
 
-                    const nameLine = lines.find(line => {
-                        const lower = line.toLowerCase();
 
-                        return (
-                            lower.includes('beyblade x') ||
-                            line.includes('ベイブレードX') ||
-                            line.includes('ベイブレード X') ||
-                            lower.includes('bx-') ||
-                            lower.includes('ux-') ||
-                            lower.includes('cx-') ||
-                            lower.includes('bxg-')
-                        );
-                    });
+def print_summary(result: dict):
+    all_products = result["all"]
+    normal_products = result["normal"]
+    excluded_products = result["excluded"]
+    non_target_products = result["non_target"]
+    in_stock_products = result["in_stock"]
+    preorder_products = result["preorder"]
+    out_of_stock_products = result["out_of_stock"]
+    unknown_products = result["unknown"]
 
-                    return nameLine || anchorText || '未知商品';
-                }
+    print("=" * 50, flush=True)
+    print(f"TAKARA 抓到商品：{len(all_products)} 個", flush=True)
+    print(f"TAKARA 正常陀螺商品：{len(normal_products)} 個", flush=True)
+    print(f"TAKARA 排除商品：{len(excluded_products)} 個", flush=True)
+    print(f"TAKARA 非目標商品：{len(non_target_products)} 個", flush=True)
+    print(f"有貨：{len(in_stock_products)} 個", flush=True)
+    print(f"預購：{len(preorder_products)} 個", flush=True)
+    print(f"無貨：{len(out_of_stock_products)} 個", flush=True)
+    print(f"未知：{len(unknown_products)} 個", flush=True)
+    print("=" * 50, flush=True)
 
-                function getPrice(card) {
-                    const text = clean(card.innerText || '');
-                    const match = text.match(/[￥¥]\\s*[\\d,]+/);
-                    return match ? match[0] : '';
-                }
-
-                function isBuyButton(el) {
-                    const text = clean(el.innerText || el.textContent || '').replace(/\\s+/g, '');
-                    const className = (el.className || '').toString().toLowerCase();
-                    const ariaDisabled = el.getAttribute('aria-disabled');
-
-                    const hasBuyText = (
-                        text.includes('カートに入れる') ||
-                        text.includes('買い物かごに入れる') ||
-                        text.includes('購入する')
-                    );
-
-                    const disabled = (
-                        el.disabled === true ||
-                        el.hasAttribute('disabled') ||
-                        ariaDisabled === 'true' ||
-                        className.includes('disabled') ||
-                        className.includes('disable') ||
-                        text.includes('在庫なし') ||
-                        text.includes('品切れ') ||
-                        text.includes('販売終了') ||
-                        text.includes('SOLDOUT') ||
-                        text.includes('SOLD OUT')
-                    );
-
-                    const visible = Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-
-                    return hasBuyText && !disabled && visible;
-                }
-
-                function getStatus(card) {
-                    const text = clean(card.innerText || '');
-
-                    if (
-                        text.includes('在庫なし') ||
-                        text.includes('品切れ') ||
-                        text.includes('販売終了') ||
-                        text.includes('SOLD OUT') ||
-                        text.includes('SOLDOUT')
-                    ) {
-                        return 'out_of_stock';
-                    }
-
-                    if (text.includes('予約')) {
-                        return 'preorder';
-                    }
-
-                    const buttons = [...card.querySelectorAll("button, a, [role='button'], div, span, input")];
-
-                    if (buttons.some(isBuyButton)) {
-                        return 'in_stock';
-                    }
-
-                    return 'in_stock';
-                }
-
-                const anchors = [...document.querySelectorAll('a[href]')]
-                    .filter(a => isProductUrl(a.href));
-
-                for (const anchor of anchors) {
-                    const url = normalizeUrl(anchor.href);
-
-                    const card = findCard(anchor);
-                    const name = getName(card, anchor);
-                    const price = getPrice(card);
-                    const status = getStatus(card);
-                    const rawText = clean(card.innerText || '');
-
-                    products.set(url, {
-                        store: 'TAKARA TOMY MALL',
-                        name,
-                        url,
-                        price,
-                        status,
-                        status_label: '',
-                        raw_text: rawText,
-                    });
-                }
-
-                return [...products.values()];
-            }
-            """
-        )
-
-        if not products:
-            page.screenshot(path="takara_debug.png", full_page=True)
-            print("抓到 0 個商品，已產生 takara_debug.png")
-
-        browser.close()
-
-    return products
+    print_products("✅ 有貨商品", in_stock_products)
+    print_products("📌 預購商品", preorder_products)
+    print_products("❌ 無貨商品", out_of_stock_products)
+    print_products("❓ 未知商品", unknown_products)
+    print_products("🚫 已排除商品", excluded_products)
+    print_products("⚪ 非目標商品", non_target_products)
 
 
 def run_once():
-    products = fetch_takara_products()
-
-    normal_beyblade_products = [
-        product for product in products
-        if is_normal_takara_beyblade_product(product)
-        and not is_excluded_takara_product(product)
-    ]
-
-    excluded_products = [
-        product for product in products
-        if is_excluded_takara_product(product)
-    ]
-
-    not_target_products = [
-        product for product in products
-        if not is_normal_takara_beyblade_product(product)
-        and not is_excluded_takara_product(product)
-    ]
-
-    for product in normal_beyblade_products:
-        product["name"] = clean_takara_name(product["name"])
-        product["status_label"] = LABEL_MAP.get(product["status"], LABEL_MAP["unknown"])
-        product["name"] = f"[TAKARA TOMY MALL] {product['name']}"
-
-    in_stock = [p for p in normal_beyblade_products if p["status"] == "in_stock"]
-    preorder = [p for p in normal_beyblade_products if p["status"] == "preorder"]
-    out_of_stock = [p for p in normal_beyblade_products if p["status"] == "out_of_stock"]
-    unknown = [p for p in normal_beyblade_products if p["status"] == "unknown"]
-
-    print("=" * 50)
-    print(f"TAKARA 抓到商品：{len(products)} 個")
-    print(f"TAKARA 正常陀螺商品：{len(normal_beyblade_products)} 個")
-    print(f"TAKARA 排除商品：{len(excluded_products)} 個")
-    print(f"TAKARA 非目標商品：{len(not_target_products)} 個")
-    print(f"有貨：{len(in_stock)} 個")
-    print(f"預購：{len(preorder)} 個")
-    print(f"無貨：{len(out_of_stock)} 個")
-    print(f"未知：{len(unknown)} 個")
-    print("=" * 50)
-
-    if excluded_products:
-        print("\n🚫 已排除商品")
-
-        for product in excluded_products[:30]:
-            print(f"- {product.get('name', '')} {product.get('price', '')}")
-            print(f"  {product.get('url', '')}")
-
-    if not_target_products:
-        print("\n⚪ 非目標商品")
-
-        for product in not_target_products[:20]:
-            print(f"- {product.get('name', '')} {product.get('price', '')}")
-            print(f"  {product.get('url', '')}")
-
-    if in_stock:
-        print("\n✅ TAKARA 有貨商品，準備發送 Discord")
-
-        for product in in_stock:
-            print(f"- {product['name']} {product.get('price', '')}")
-            print(f"  {product['url']}")
-            send_restock_alert(product)
-
-    else:
-        print("\n目前 TAKARA 無現貨，不發 Discord")
-
-    if preorder:
-        print("\n📌 預購商品")
-
-        for product in preorder[:30]:
-            print(f"- {product['name']} {product.get('price', '')}")
-            print(f"  {product['url']}")
-
-    if out_of_stock:
-        print("\n❌ 無貨商品")
-
-        for product in out_of_stock[:30]:
-            print(f"- {product['name']} {product.get('price', '')}")
-
-    if unknown:
-        print("\n❓ 狀態未知商品")
-
-        for product in unknown[:30]:
-            print(f"- {product['name']} {product.get('price', '')}")
-            print(f"  {product['url']}")
+    result = scan_takara_once()
+    print_summary(result)
+    send_takara_notifications(result["in_stock"])
 
 
 def main():
-    print("🇯🇵 TAKARA TOMY MALL 陀螺獵人啟動")
-    print(f"   掃描網址：{BASE_TAKARA_URLS[0]}")
-    print(f"   掃描間隔：{CHECK_INTERVAL} 秒")
-    print(f"   背景模式：{HEADLESS}")
-    print(f"   視窗大小：{BROWSER_WIDTH} x {BROWSER_HEIGHT}")
-    print(f"   視窗位置：{BROWSER_X}, {BROWSER_Y}")
+    print("🇯🇵 TAKARA TOMY MALL 陀螺獵人啟動", flush=True)
+    print(f"   掃描網址：{BASE_TAKARA_URLS[0]}", flush=True)
+    print(f"   掃描間隔：{CHECK_INTERVAL} 秒", flush=True)
+    print(f"   背景模式：{HEADLESS}", flush=True)
+    print(f"   視窗大小：{BROWSER_WIDTH} x {BROWSER_HEIGHT}", flush=True)
+    print(f"   視窗位置：{BROWSER_X}, {BROWSER_Y}", flush=True)
+    print("", flush=True)
 
     if "--once" in sys.argv:
-        now = datetime.now().strftime("%H:%M:%S")
-
-        print(f"\n{'=' * 50}")
-        print(f"[{now}] 開始掃描 TAKARA...")
-
-        try:
-            run_once()
-        except Exception as e:
-            print(f"[!] TAKARA 掃描錯誤：{e}")
-
-        print("\n--once 模式結束")
+        run_once()
+        print("\n--once 模式結束", flush=True)
         return
 
     while True:
-        now = datetime.now().strftime("%H:%M:%S")
-
-        print(f"\n{'=' * 50}")
-        print(f"[{now}] 開始掃描 TAKARA...")
-
-        try:
-            run_once()
-        except KeyboardInterrupt:
-            print("\n已停止 TAKARA 監控")
-            break
-        except Exception as e:
-            print(f"[!] TAKARA 掃描錯誤：{e}")
-
-        print(f"\n下次掃描：{CHECK_INTERVAL} 秒後")
+        run_once()
+        print(f"\n等待 {CHECK_INTERVAL} 秒後再次掃描 TAKARA...", flush=True)
         time.sleep(CHECK_INTERVAL)
 
 
