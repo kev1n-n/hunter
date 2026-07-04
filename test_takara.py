@@ -36,7 +36,14 @@ BROWSER_HEIGHT = int(os.getenv("TAKARA_BROWSER_HEIGHT", "400"))
 BROWSER_X = int(os.getenv("TAKARA_BROWSER_X", "-2000"))
 BROWSER_Y = int(os.getenv("TAKARA_BROWSER_Y", "100"))
 
-PAGE_TIMEOUT_MS = int(os.getenv("TAKARA_PAGE_TIMEOUT_MS", "45000"))
+# 單次開 TAKARA 頁面最多等幾毫秒
+PAGE_TIMEOUT_MS = int(os.getenv("TAKARA_PAGE_TIMEOUT_MS", "30000"))
+
+# TAKARA 失敗時重試幾次
+TAKARA_RETRY_ATTEMPTS = int(os.getenv("TAKARA_RETRY_ATTEMPTS", "2"))
+
+# 每次重試中間休息幾秒
+TAKARA_RETRY_SLEEP_SECONDS = int(os.getenv("TAKARA_RETRY_SLEEP_SECONDS", "5"))
 
 LABEL_MAP = {
     "in_stock": "✅ 有貨 / 可加入購物車",
@@ -275,20 +282,23 @@ def get_takara_status(product: dict, page_url: str) -> str:
 def open_takara_base_page(page) -> bool:
     """
     TAKARA 直接打開已套用「在庫あり」的網址。
-    如果這個網址本輪開不起來，就直接放棄，不再嘗試其他網址。
+    Zeabur 上 TAKARA 偶爾 domcontentloaded 會卡住，
+    所以改用 wait_until="commit"：只要網站有開始回應就繼續。
+    如果這輪開不起來，就快速放棄，讓 retry 重開 Chromium 再試。
     """
     try:
         print(f"嘗試網址：{TAKARA_IN_STOCK_URL}", flush=True)
 
         page.goto(
             TAKARA_IN_STOCK_URL,
-            wait_until="domcontentloaded",
+            wait_until="commit",
             timeout=PAGE_TIMEOUT_MS,
         )
 
         hide_chromium_window()
 
-        page.wait_for_timeout(10000)
+        # 給 TAKARA 一點時間把商品列表渲染出來
+        page.wait_for_timeout(15000)
 
         return True
 
@@ -299,15 +309,16 @@ def open_takara_base_page(page) -> bool:
 
 def apply_in_stock_filter(page) -> bool:
     """
-    目前已經直接打開 stock_on_sales=0 的網址，
+    目前已經直接打開 TAKARA_IN_STOCK_URL，
     所以不用再點畫面上的篩選條件。
-    """
-    if "stock_on_sales=0" in page.url:
-        print("已使用 TAKARA 在庫あり篩選網址，略過畫面點選篩選", flush=True)
-        return True
 
-    print("[!] 目前頁面不是 TAKARA 在庫あり篩選頁，略過本輪", flush=True)
-    return False
+    Zeabur 上 page.url 有時候會被 TAKARA 改寫或重新導向，
+    如果再檢查 stock_on_sales=0，可能會誤判成不是在庫あり頁。
+    所以這裡直接放行，繼續往下抓商品。
+    """
+    print(f"目前 TAKARA 頁面網址：{page.url}", flush=True)
+    print("已直接使用 TAKARA 在庫あり網址，略過畫面點選篩選", flush=True)
+    return True
 
 
 def extract_takara_products(page) -> list[dict]:
@@ -599,9 +610,34 @@ def print_summary(result: dict):
 
 
 def run_once():
-    result = scan_takara_once()
-    print_summary(result)
-    send_takara_notifications(result["in_stock"])
+    final_result = empty_result()
+
+    for attempt in range(1, TAKARA_RETRY_ATTEMPTS + 1):
+        print(
+            f"\nTAKARA 第 {attempt}/{TAKARA_RETRY_ATTEMPTS} 次嘗試",
+            flush=True,
+        )
+
+        result = scan_takara_once()
+        final_result = result
+
+        total_count = len(result["all"])
+
+        if total_count > 0:
+            print(f"TAKARA 第 {attempt} 次成功抓到商品，停止重試", flush=True)
+            break
+
+        if attempt < TAKARA_RETRY_ATTEMPTS:
+            print(
+                f"TAKARA 第 {attempt} 次沒有抓到商品，等待 {TAKARA_RETRY_SLEEP_SECONDS} 秒後重開再試",
+                flush=True,
+            )
+            time.sleep(TAKARA_RETRY_SLEEP_SECONDS)
+        else:
+            print("TAKARA 重試次數已用完，這輪跳過，交給下一輪再試", flush=True)
+
+    print_summary(final_result)
+    send_takara_notifications(final_result["in_stock"])
 
 
 def main():
@@ -611,6 +647,9 @@ def main():
     print(f"   背景模式：{HEADLESS}", flush=True)
     print(f"   視窗大小：{BROWSER_WIDTH} x {BROWSER_HEIGHT}", flush=True)
     print(f"   視窗位置：{BROWSER_X}, {BROWSER_Y}", flush=True)
+    print(f"   單次開頁 timeout：{PAGE_TIMEOUT_MS} ms", flush=True)
+    print(f"   失敗重試次數：{TAKARA_RETRY_ATTEMPTS}", flush=True)
+    print(f"   重試間隔：{TAKARA_RETRY_SLEEP_SECONDS} 秒", flush=True)
     print("", flush=True)
 
     if "--once" in sys.argv:
