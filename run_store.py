@@ -22,6 +22,7 @@ STORE_COMMANDS = {
     "funbox": [sys.executable, "-u", "test_funbox.py", "--once"],
     "momo": [sys.executable, "-u", "test_momo.py", "--once"],
     "takara": [sys.executable, "-u", "test_takara.py", "--once"],
+    "toysrus": [sys.executable, "-u", "test_toysrus.py", "--once"],
     "tcsb": [sys.executable, "-u", "test_tcsb.py", "--once"],
 }
 
@@ -104,7 +105,7 @@ def print_config():
     if STORE in STORE_COMMANDS:
         print(f"[store-runner] command: {' '.join(STORE_COMMANDS[STORE])}", flush=True)
     else:
-        print("[store-runner] 找不到對應 STORE，請設定 eslite / funbox / momo / takara / tcsb", flush=True)
+        print("[store-runner] 找不到對應 STORE，請設定 eslite / funbox / momo / takara / toysrus / tcsb", flush=True)
 
     print("=" * 50, flush=True)
 
