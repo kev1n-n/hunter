@@ -13,14 +13,9 @@ venv/
 
 # local data
 data/
-funbox_state.json
-order_summary.json
-order_submit_result.json
 
 # debug screenshots
 *.png
-*.jpg
-*.jpeg
 
 # macOS
 .DS_Store
