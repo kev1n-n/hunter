@@ -191,14 +191,14 @@ def fetch_funbox_products() -> list:
 
         page.wait_for_timeout(5000)
 
-        for i in range(5):
+        for i in range(2):
             count = page.evaluate(
                 """
                 () => document.querySelectorAll("a[href*='/products/']").length
                 """
             )
 
-            print(f"Funbox 滾動 {i + 1}/5，目前商品連結：{count}")
+            print(f"Funbox 滾動 {i + 1}/2，目前商品連結：{count}")
 
             page.mouse.wheel(0, 1500)
             page.wait_for_timeout(1200)
