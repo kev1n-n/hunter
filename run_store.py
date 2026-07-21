@@ -25,6 +25,8 @@ STORE_COMMANDS = {
     "toysrus": [sys.executable, "-u", "test_toysrus.py", "--once"],
     "shopee": [sys.executable, "-u", "test_shopee.py", "--once"],
     "tcsb": [sys.executable, "-u", "test_tcsb.py", "--once"],
+    "1999": [sys.executable, "-u", "test_1999.py", "--once"],
+    "hobbysearch": [sys.executable, "-u", "test_1999.py", "--once"],
 }
 
 CHECK_INTERVAL_SECONDS = get_env_int("CHECK_INTERVAL_SECONDS", 90)
@@ -55,7 +57,10 @@ def start_health_server():
     port = int(os.getenv("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
 
-    print(f"[store-runner] health server started on port {port}", flush=True)
+    print(
+        f"[store-runner] health server started on port {port}",
+        flush=True,
+    )
 
     server.serve_forever()
 
@@ -63,20 +68,23 @@ def start_health_server():
 def stop_current_process():
     global current_process
 
-    if current_process is None:
+    if current_process is None or current_process.poll() is not None:
         return
 
-    if current_process.poll() is not None:
-        return
-
-    print("[store-runner] 停止目前正在執行的爬蟲...", flush=True)
+    print(
+        "[store-runner] 停止目前正在執行的爬蟲...",
+        flush=True,
+    )
 
     current_process.terminate()
 
     try:
         current_process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        print("[store-runner] 爬蟲未正常停止，強制 kill", flush=True)
+        print(
+            "[store-runner] 爬蟲未正常停止，強制 kill",
+            flush=True,
+        )
         current_process.kill()
         current_process.wait(timeout=10)
 
@@ -86,11 +94,17 @@ def stop_all(signum=None, frame=None):
 
     should_stop = True
 
-    print("[store-runner] 收到停止訊號，準備關閉...", flush=True)
+    print(
+        "[store-runner] 收到停止訊號，準備關閉...",
+        flush=True,
+    )
 
     stop_current_process()
 
-    print("[store-runner] runner 已停止", flush=True)
+    print(
+        "[store-runner] runner 已停止",
+        flush=True,
+    )
 
     sys.exit(0)
 
@@ -99,14 +113,35 @@ def print_config():
     print("=" * 50, flush=True)
     print("[store-runner] 單店模式啟動", flush=True)
     print(f"[store-runner] STORE={STORE}", flush=True)
-    print(f"[store-runner] CHECK_INTERVAL_SECONDS={CHECK_INTERVAL_SECONDS}", flush=True)
-    print(f"[store-runner] SERVICE_TIMEOUT_SECONDS={SERVICE_TIMEOUT_SECONDS}", flush=True)
-    print(f"[store-runner] MAX_ROUNDS_BEFORE_EXIT={MAX_ROUNDS_BEFORE_EXIT}", flush=True)
+    print(
+        f"[store-runner] CHECK_INTERVAL_SECONDS="
+        f"{CHECK_INTERVAL_SECONDS}",
+        flush=True,
+    )
+    print(
+        f"[store-runner] SERVICE_TIMEOUT_SECONDS="
+        f"{SERVICE_TIMEOUT_SECONDS}",
+        flush=True,
+    )
+    print(
+        f"[store-runner] MAX_ROUNDS_BEFORE_EXIT="
+        f"{MAX_ROUNDS_BEFORE_EXIT}",
+        flush=True,
+    )
 
     if STORE in STORE_COMMANDS:
-        print(f"[store-runner] command: {' '.join(STORE_COMMANDS[STORE])}", flush=True)
+        print(
+            f"[store-runner] command: "
+            f"{' '.join(STORE_COMMANDS[STORE])}",
+            flush=True,
+        )
     else:
-        print("[store-runner] 找不到對應 STORE，請設定 eslite / funbox / momo / takara / toysrus / shopee / tcsb", flush=True)
+        print(
+            "[store-runner] 找不到對應 STORE，請設定 "
+            "eslite / funbox / momo / takara / toysrus / "
+            "shopee / tcsb / 1999 / hobbysearch",
+            flush=True,
+        )
 
     print("=" * 50, flush=True)
 
@@ -115,8 +150,14 @@ def run_once(command):
     global current_process
 
     print("=" * 50, flush=True)
-    print(f"[store-runner] 開始掃描 {STORE}", flush=True)
-    print(f"[store-runner] command: {' '.join(command)}", flush=True)
+    print(
+        f"[store-runner] 開始掃描 {STORE}",
+        flush=True,
+    )
+    print(
+        f"[store-runner] command: {' '.join(command)}",
+        flush=True,
+    )
 
     started_at = time.time()
 
@@ -128,17 +169,21 @@ def run_once(command):
     )
 
     try:
-        exit_code = current_process.wait(timeout=SERVICE_TIMEOUT_SECONDS)
+        exit_code = current_process.wait(
+            timeout=SERVICE_TIMEOUT_SECONDS,
+        )
         elapsed = int(time.time() - started_at)
 
         print(
-            f"[store-runner] {STORE} 掃描完成，exit code={exit_code}，耗時 {elapsed} 秒",
+            f"[store-runner] {STORE} 掃描完成，"
+            f"exit code={exit_code}，耗時 {elapsed} 秒",
             flush=True,
         )
 
     except subprocess.TimeoutExpired:
         print(
-            f"[store-runner] {STORE} 超過 {SERVICE_TIMEOUT_SECONDS} 秒未結束，強制停止",
+            f"[store-runner] {STORE} 超過 "
+            f"{SERVICE_TIMEOUT_SECONDS} 秒未結束，強制停止",
             flush=True,
         )
         stop_current_process()
@@ -148,7 +193,10 @@ def run_once(command):
 
 
 def main():
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True,
+    )
     health_thread.start()
 
     signal.signal(signal.SIGTERM, stop_all)
@@ -165,24 +213,36 @@ def main():
 
     while not should_stop:
         print("=" * 50, flush=True)
-        print(f"[store-runner] 開始第 {round_count} 輪：{STORE}", flush=True)
+        print(
+            f"[store-runner] 開始第 {round_count} 輪：{STORE}",
+            flush=True,
+        )
         print("=" * 50, flush=True)
 
         run_once(command)
 
         print("=" * 50, flush=True)
-        print(f"[store-runner] 第 {round_count} 輪完成：{STORE}", flush=True)
+        print(
+            f"[store-runner] 第 {round_count} 輪完成：{STORE}",
+            flush=True,
+        )
 
         if round_count >= MAX_ROUNDS_BEFORE_EXIT:
             print(
-                f"[store-runner] 已完成 {MAX_ROUNDS_BEFORE_EXIT} 輪，主動結束讓 Zeabur 重啟",
+                f"[store-runner] 已完成 "
+                f"{MAX_ROUNDS_BEFORE_EXIT} 輪，"
+                "主動結束讓 Zeabur 重啟",
                 flush=True,
             )
-            print("[store-runner] 這是正常保護機制，不是程式錯誤", flush=True)
+            print(
+                "[store-runner] 這是正常保護機制，不是程式錯誤",
+                flush=True,
+            )
             sys.exit(0)
 
         print(
-            f"[store-runner] 等待 {CHECK_INTERVAL_SECONDS} 秒後開始下一輪",
+            f"[store-runner] 等待 "
+            f"{CHECK_INTERVAL_SECONDS} 秒後開始下一輪",
             flush=True,
         )
         print("=" * 50, flush=True)
