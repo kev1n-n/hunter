@@ -296,6 +296,22 @@ def fetch_momo_products() -> list:
 
         page.wait_for_timeout(5000)
 
+        body_text = page.inner_text("body")  # 取得 momo 搜尋頁目前顯示的全部文字
+
+        no_store_result_keywords = [  # momo 找不到墊腳石商品時可能出現的提示文字
+            "在墊腳石商城中查無符合戰鬥陀螺商品",
+            "在墊腳石商城中查無符合",
+            "已為您搜尋全站中的相似商品",
+        ]
+
+        if any(keyword in body_text for keyword in no_store_result_keywords):  # 判斷頁面是否已切換成全站相似商品
+            print(  # 在執行紀錄中顯示為何不繼續抓取
+                "墊腳石商城目前查無戰鬥陀螺，"
+                "momo 已切換顯示全站相似商品，本輪略過"
+            )
+            browser.close()  # 關閉 Chromium，釋放這一輪使用的記憶體
+            return []  # 回傳空商品清單，避免把其他商家的商品誤認為墊腳石商品
+
         for i in range(8):
             count = page.evaluate(
                 """
