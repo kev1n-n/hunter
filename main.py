@@ -122,7 +122,7 @@ def is_beyblade(product: dict) -> bool:
     exclude_keywords = [
         "電子書",
         "ebook",
-        "e-book",
+        "e-book",                
         "漫畫",
         "雜誌",
         "貼紙",
@@ -134,6 +134,10 @@ def is_beyblade(product: dict) -> bool:
         "戰鬥陀螺x 1",
         "戰鬥陀螺x 2",
         "vol. 3",
+        "戳戳樂",           # 排除戳戳樂商品
+        "降臨曆",           # 排除中文降臨曆
+        "倒數日曆",         # 排除其他常見名稱
+        "advent calendar",  # 排除英文降臨曆
     ]
 
     compact_exclude_keywords = [
