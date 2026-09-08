@@ -132,7 +132,7 @@ def is_beyblade_x_product(product: dict) -> bool:
     )
     has_code = bool(re.search(r"\b(?:BX|UX|CX|BXG)-\d+", text, re.IGNORECASE))
 
-    exclude_keywords = ["電子書籍", "書籍", "コミック", "雑誌", "カード", "ステッカー", "シール"]
+    exclude_keywords = ["電子書籍", "書籍", "コミック", "雑誌", "カード", "ステッカー", "シール","BX-25"]
     if any(normalize_text(word) in compact for word in exclude_keywords):
         product["excluded_reason"] = "排除非陀螺商品"
         return False
